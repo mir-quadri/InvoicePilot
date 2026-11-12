@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>InvoicePilot — freelancer invoices, drafted from plain language, paid via PayPal (sandbox)</title>
+<style>
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;background:#f6f7f9;color:#111}
+  header{background:#003087;color:#fff;padding:18px 20px}
+  header h1{margin:0;font-size:22px} header p{margin:6px 0 0;opacity:.9}
+  main{max-width:960px;margin:0 auto;padding:20px}
+  section{background:#fff;border:1px solid #ddd;border-radius:10px;padding:16px;margin-bottom:16px}
+  label{display:block;font-weight:600;margin:10px 0 4px}
+  textarea,input{width:100%;box-sizing:border-box;padding:9px;border:1px solid #bbb;border-radius:6px;font:inherit}
+  button{background:#0070e0;color:#fff;border:0;border-radius:6px;padding:9px 14px;font:inherit;cursor:pointer;margin:6px 6px 0 0}
+  button.secondary{background:#e7eef7;color:#003087}
+  .banner{background:#fff3cd;border:1px solid #e6c200;padding:10px;border-radius:8px}
+  pre{white-space:pre-wrap;background:#f1f3f5;padding:10px;border-radius:6px;overflow:auto}
+  table{width:100%;border-collapse:collapse} th,td{text-align:left;padding:8px;border-bottom:1px solid #eee;font-size:14px}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#e7eef7;font-size:12px;font-weight:700}
+  .muted{color:#555;font-size:13px}
+</style>
+</head>
+<body>
+<header>
+  <h1>InvoicePilot</h1>
+  <p>Describe the work. The agent drafts the invoice, creates it in PayPal, and drafts polite payment reminders. <strong>Sandbox only — no real money.</strong></p>
+</header>
+<main>
+  <p class="banner" id="modeBanner">PayPal mode: loading… Invoices are drafts until you send them. Follow-ups are drafts only — InvoicePilot never emails anyone.</p>
+
+  <section>
+    <h2>1. Describe the work</h2>
+    <label for="text">Plain language, e.g. “Invoice Acme Studio for logo design, $800, net 14, billing@acme.example”</label>
+    <textarea id="text" rows="3">Invoice Acme Studio for logo design, $800, net 14, billing@acme.example</textarea>
+    <button id="draftBtn">Draft invoice</button>
+    <div id="draftOut"></div>
+    <div id="confirmBox" hidden>
+      <label for="cName">Client name</label><input id="cName">
+      <label for="cEmail">Client email</label><input id="cEmail">
+      <label for="due">Due date</label><input id="due" type="date">
+      <button id="createBtn">Create in PayPal (as draft)</button>
+      <p class="muted">Check the preview first. Nothing is created in PayPal until you press this button.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Invoices</h2>
+    <button class="secondary" id="refreshBtn">Refresh list &amp; summary</button>
+    <div id="summary"></div>
+    <table><thead><tr><th>Invoice</th><th>Client</th><th>Total</th><th>Due</th><th>Status</th><th>PayPal</th><th>Actions</th></tr></thead><tbody id="rows"></tbody></table>
+  </section>
+
+  <section>
+    <h2>3. Follow-up draft</h2>
+    <p class="muted">Pick “Follow-up” on an unpaid, sent invoice. The tone escalates with how overdue it is: polite → firm → final. Review before sending it yourself.</p>
+    <div id="followOut"></div>
+  </section>
+
+  <section>
+    <h2>How it works — honestly</h2>
+    <p class="muted">Drafting is a deterministic engine in this build: it extracts client, amount, currency and due terms from your words and fills verified invoice data into templates. No hosted LLM key is required and no model output is invented. PayPal is abstracted behind an interface: by default every call goes to an in-memory mock sandbox (mock ids and mock-sandbox:// links). A live PayPal sandbox client for the Invoicing API v2 is included and is only used with sandbox credentials — see README. Invoices are stored in memory and clear on restart.</p>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let currentDraft = null;
+async function api(path, opts={}) {
+  const r = await fetch(path, {headers:{'Content-Type':'application/json'}, ...opts});
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+async function load() {
+  const h = await api('/health');
+  $('modeBanner').textContent = `PayPal mode: ${h.paypalMode} — sandbox only, no real money. Invoices are drafts until you send them. Follow-ups are drafts only — InvoicePilot never emails anyone.`;
+  const {invoices} = await api('/api/invoices');
+  const {summary} = await api('/api/summary');
+  $('summary').innerHTML = `<p><strong>Payment-risk summary:</strong> ${esc(summary.summary)}</p><p class="muted">${esc(summary.recommendedAction)}</p>`;
+  $('rows').innerHTML = invoices.map(inv => `<tr>
+    <td>${esc(inv.number)}</td><td>${esc(inv.clientName)}</td><td>${esc(inv.currency)} ${(inv.totalCents/100).toFixed(2)}</td>
+    <td>${esc(inv.dueDate)}</td><td><span class="pill">${esc(inv.status)}</span></td>
+    <td class="muted">${esc(inv.paypalInvoiceId||'—')}${inv.mock?' (mock)':''}</td>
+    <td>
+      <button data-send="${inv.id}">Send</button>
+      <button data-follow="${inv.id}">Follow-up</button>
+      ${inv.mock ? `<button data-paid="${inv.id}">Mark paid (mock)</button>` : ''}
+    </td></tr>`).join('') || '<tr><td colspan="7">No invoices yet.</td></tr>';
+  document.querySelectorAll('[data-send]').forEach(b=>b.onclick=async()=>{await api(`/api/invoices/${b.dataset.send}/send`,{method:'POST'}); await load();});
+  document.querySelectorAll('[data-paid]').forEach(b=>b.onclick=async()=>{try{await api(`/api/invoices/${b.dataset.paid}/mark-paid`,{method:'POST'});}catch(e){alert(e.message)} await load();});
+  document.querySelectorAll('[data-follow]').forEach(b=>b.onclick=async()=>{try{const d=await api(`/api/invoices/${b.dataset.follow}/follow-up`,{method:'POST'});
+    $('followOut').innerHTML=`<h3>${esc(d.followUp.subject)} <span class="pill">${esc(d.followUp.tone)} · ${d.followUp.daysOverdue} days overdue</span></h3><pre>${esc(d.followUp.body)}</pre><p class="muted">${esc(d.followUp.recommendedAction)}</p>`;
+  }catch(e){alert(e.message)}});
+}
+$('draftBtn').onclick = async () => {
+  try {
+    const {draft} = await api('/api/invoices/draft',{method:'POST', body:JSON.stringify({text:$('text').value})});
+    currentDraft = draft;
+    $('draftOut').innerHTML = `<h3>Preview — confirm before creating</h3><pre>${esc(JSON.stringify(draft,null,2))}</pre>
+      <p>${esc(draft.understood.join(' · '))}</p>${draft.missingFields.length?`<p><strong>Missing:</strong> ${esc(draft.missingFields.join(', '))} — fill them in below.</p>`:''}`;
+    $('cName').value = draft.clientName; $('cEmail').value = draft.clientEmail; $('due').value = draft.dueDate || '';
+    $('confirmBox').hidden = false;
+  } catch(e){ alert(e.message); }
+};
+$('createBtn').onclick = async () => {
+  try {
+    await api('/api/invoices',{method:'POST', body:JSON.stringify({draft:currentDraft, clientName:$('cName').value, clientEmail:$('cEmail').value, dueDate:$('due').value||undefined})});
+    $('confirmBox').hidden = true; await load();
+  } catch(e){ alert(e.message); }
+};
+$('refreshBtn').onclick = load;
+load();
+</script>
+</body>
+</html>
